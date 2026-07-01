@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Flip Scout Settings</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main>
+    <h1>Flip Scout Settings</h1>
+
+    <section>
+      <h2>Anthropic API key</h2>
+      <p class="help-text">
+        Optional. When set, Flip Scout sends your cropped screenshot to a
+        Claude vision model to generate a short search keyword, which is used
+        to pre-fill eBay sold-listings and Google Shopping searches. Without a
+        key, capture, clipboard copy, and Google Images still work exactly the
+        same — the eBay/Shopping steps are simply skipped.
+      </p>
+      <p class="help-text">
+        Your key is stored only on this device (<code>chrome.storage.local</code>,
+        never synced) and is sent directly to Anthropic's API — never to any
+        other server. Get a key at
+        <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer">console.anthropic.com</a>.
+      </p>
+
+      <form id="settings-form">
+        <label for="api-key">API key</label>
+        <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." />
+        <div class="form-actions">
+          <button id="save-btn" type="submit">Save</button>
+          <span id="status-msg" role="status"></span>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <h2>Keyboard shortcut</h2>
+      <p class="help-text">
+        Default capture shortcut is <kbd>Ctrl+Shift+Y</kbd> (Windows/Linux) or
+        <kbd>Cmd+Shift+Y</kbd> (Mac). Chrome silently skips binding it if
+        something else on your system already uses it — check and remap it at
+        <a href="chrome://extensions/shortcuts" id="shortcuts-link">chrome://extensions/shortcuts</a>.
+      </p>
+    </section>
+  </main>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

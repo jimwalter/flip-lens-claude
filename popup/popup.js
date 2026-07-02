@@ -1,137 +1,67 @@
-import { getHistory, deleteHistoryEntry, clearHistory, HISTORY_KEY } from '../lib/storage.js';
-import { formatTimeAgo } from '../lib/timeago.js';
+const statusEl = document.getElementById('status');
 
-const captureBtn = document.getElementById('capture-btn');
-const settingsBtn = document.getElementById('settings-btn');
-const clearAllBtn = document.getElementById('clear-all-btn');
-const historyList = document.getElementById('history-list');
-const emptyState = document.getElementById('empty-state');
+run();
 
-captureBtn.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: 'FLIPSCOUT_TRIGGER_CAPTURE' });
-  window.close();
-});
-
-settingsBtn.addEventListener('click', () => {
-  chrome.runtime.openOptionsPage();
-});
-
-clearAllBtn.addEventListener('click', async () => {
-  await clearHistory();
-  render();
-});
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes[HISTORY_KEY]) {
-    render();
-  }
-});
-
-async function render() {
-  const history = await getHistory();
-  historyList.innerHTML = '';
-
-  if (history.length === 0) {
-    emptyState.hidden = false;
+async function run() {
+  let imageBlob;
+  try {
+    imageBlob = await readClipboardImage();
+  } catch (err) {
+    statusEl.textContent = `Couldn't read the clipboard: ${err.message || err}`;
     return;
   }
-  emptyState.hidden = true;
 
-  for (const entry of history) {
-    historyList.appendChild(renderEntry(entry));
-  }
-}
-
-function renderEntry(entry) {
-  const item = document.createElement('div');
-  item.className = 'history-item';
-
-  const thumb = document.createElement('img');
-  thumb.className = 'history-thumb';
-  thumb.src = entry.thumbnail;
-  thumb.alt = entry.keyword || 'Captured item';
-  item.appendChild(thumb);
-
-  const body = document.createElement('div');
-  body.className = 'history-body';
-
-  const title = document.createElement('div');
-  title.className = 'history-title';
-  title.textContent = entry.keyword || 'No keyword generated';
-  body.appendChild(title);
-
-  const meta = document.createElement('div');
-  meta.className = 'history-meta';
-  meta.textContent = formatTimeAgo(entry.timestamp);
-  body.appendChild(meta);
-
-  if (entry.skippedReason) {
-    body.appendChild(renderSkipNote(entry.skippedReason));
+  if (!imageBlob) {
+    statusEl.textContent =
+      'No image on your clipboard. Take a screenshot first — Cmd+Ctrl+Shift+4 on Mac ' +
+      'or Win+Shift+S on Windows both copy straight to the clipboard — then try again.';
+    return;
   }
 
-  if (entry.googleSearchFailed) {
-    const note = document.createElement('div');
-    note.className = 'history-skip-note';
-    note.textContent = 'Google reverse-image search failed to open.';
-    body.appendChild(note);
+  statusEl.textContent = 'Searching Google…';
+
+  const resultsUrl = await uploadToGoogle(imageBlob);
+  if (!resultsUrl) {
+    statusEl.textContent = 'Google search failed. Try again in a moment.';
+    return;
   }
 
-  const links = document.createElement('div');
-  links.className = 'history-links';
-  addLink(links, entry.links.googleImages, 'Google Images');
-  addLink(links, entry.links.ebay, 'eBay');
-  addLink(links, entry.links.googleShopping, 'Shopping');
-  body.appendChild(links);
-
-  item.appendChild(body);
-  item.appendChild(renderDeleteButton(entry.id));
-
-  return item;
+  await chrome.tabs.create({ url: resultsUrl, active: true });
+  window.close();
 }
 
-function renderSkipNote(reason) {
-  const note = document.createElement('div');
-  note.className = 'history-skip-note';
-  const reasonText =
-    reason === 'no_api_key'
-      ? 'eBay/Shopping skipped — no API key set. '
-      : 'eBay/Shopping skipped — keyword generation failed. ';
-  note.textContent = reasonText;
-
-  const settingsLink = document.createElement('a');
-  settingsLink.href = '#';
-  settingsLink.textContent = 'Open Settings';
-  settingsLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    chrome.runtime.openOptionsPage();
-  });
-  note.appendChild(settingsLink);
-  return note;
+async function readClipboardImage() {
+  const items = await navigator.clipboard.read();
+  for (const item of items) {
+    const imageType = item.types.find((type) => type.startsWith('image/'));
+    if (imageType) return item.getType(imageType);
+  }
+  return null;
 }
 
-function renderDeleteButton(entryId) {
-  const deleteBtn = document.createElement('button');
-  deleteBtn.className = 'history-delete';
-  deleteBtn.type = 'button';
-  deleteBtn.setAttribute('aria-label', 'Delete');
-  deleteBtn.textContent = '×';
-  deleteBtn.addEventListener('click', async () => {
-    await deleteHistoryEntry(entryId);
-    render();
-  });
-  return deleteBtn;
-}
+async function uploadToGoogle(imageBlob) {
+  try {
+    const formData = new FormData();
+    formData.append('encoded_image', imageBlob, 'flipscout-capture.png');
+    formData.append('image_url', '');
+    formData.append('sbisrc', 'Google Chrome');
 
-function addLink(container, url, label) {
-  if (!url) return;
-  const a = document.createElement('a');
-  a.href = url;
-  a.textContent = label;
-  a.addEventListener('click', (e) => {
-    e.preventDefault();
-    chrome.tabs.create({ url });
-  });
-  container.appendChild(a);
-}
+    // host_permissions for google.com let this fetch bypass the CORS
+    // restriction a normal webpage would hit; the response redirects to
+    // the finished reverse-image-search results page.
+    const response = await fetch('https://www.google.com/searchbyimage/upload', {
+      method: 'POST',
+      mode: 'cors',
+      body: formData,
+    });
 
-render();
+    if (!response.ok) {
+      console.error('Flip Scout: Google upload failed', response.status);
+      return null;
+    }
+    return response.url;
+  } catch (err) {
+    console.error('Flip Scout: Google upload errored', err);
+    return null;
+  }
+}

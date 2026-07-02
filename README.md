@@ -1,9 +1,10 @@
 # Flip Scout
 
 A Chrome extension for fast visual research: screenshot an item on any
-webpage, get it copied straight to your system clipboard, and have Google
-Images (plus eBay sold listings and Google Shopping, when a keyword can be
-generated) open automatically.
+webpage and, with no further clicks, get a Google reverse-image-search
+results tab (plus eBay sold listings and Google Shopping, when a keyword can
+be generated) opened for you automatically. The screenshot is also copied to
+your system clipboard as a bonus, in case you want to paste it elsewhere.
 
 ## Status
 
@@ -22,17 +23,21 @@ done.
 
 ### Things to verify by hand (no automated test can check these)
 
-- Click the toolbar icon on a normal `http(s)` page → drag-select overlay
-  appears, Esc cancels it.
-- Complete a drag-select → cropped screenshot lands on the system clipboard
-  (paste it anywhere, e.g. Preview/Paint, to confirm) and a Google Images tab
-  opens with the "paste to search" banner.
-- Paste into Google's search box → banner dismisses itself.
-- With no Anthropic key set in Options → only the Google Images tab opens;
+- Press the keyboard shortcut (or click the toolbar icon) on a normal
+  `http(s)` page → drag-select overlay appears immediately, Esc cancels it.
+- Complete a drag-select and release → with no further click, a new tab
+  opens showing Google reverse-image-search results for the cropped item.
+  The crop is also on the system clipboard (paste it anywhere, e.g.
+  Preview/Paint, to confirm).
+- With no Anthropic key set in Options → only the Google results tab opens;
   the popup history entry shows a "skipped, no API key" note with a working
   link to Settings.
 - With a valid Anthropic key set → eBay (sold/completed listings) and Google
   Shopping tabs also open, pre-filled with the generated keyword.
+- Disconnect from the internet (or otherwise force the upload to fail) →
+  capture should still complete gracefully; the history entry notes that the
+  Google search failed to open, rather than the extension hanging or
+  erroring out silently.
 - Popup history: thumbnails render, delete removes a single entry, "Clear
   all" empties the list, tab links open the right pages.
 - Keyboard shortcut (`Ctrl+Shift+Y` / `Cmd+Shift+Y`) triggers the same
@@ -56,48 +61,62 @@ Shopping tabs. This is entirely optional:
 - The key is stored only in `chrome.storage.local` on this device (never
   synced) and is sent only directly to Anthropic's API.
 - Without a key, or if the API call fails, Flip Scout still copies the
-  screenshot to your clipboard and opens Google Images — it just skips
-  opening eBay/Shopping tabs rather than opening them blank. The history log
-  notes why a capture was skipped.
+  screenshot to your clipboard and opens the Google reverse-image-search tab
+  — it just skips opening eBay/Shopping tabs rather than opening them blank.
+  The history log notes why a capture was skipped.
 
 ## Architecture
 
 - `background/background.js` — service worker. Orchestrates capture
   (injecting the overlay, taking the full-tab screenshot via
-  `chrome.tabs.captureVisibleTab`), calls the Anthropic API for keyword
-  generation, builds the eBay/Shopping search URLs, opens tabs, and writes
-  history.
+  `chrome.tabs.captureVisibleTab`), POSTs the cropped image directly to
+  Google's reverse-image-search upload endpoint and opens a tab to the
+  resulting results page, calls the Anthropic API for keyword generation,
+  builds the eBay/Shopping search URLs, opens tabs, and writes history.
 - `content/capture-overlay.js` (+ `.css`) — injected on demand (toolbar
   click or keyboard shortcut only, not persistent). Draws the click-drag
-  selection overlay, crops the screenshot via `<canvas>`, and writes the
-  crop to the system clipboard with `navigator.clipboard.write()` +
-  `ClipboardItem`.
-- `content/google-banner.js` (+ `.css`) — persistent content script matched
-  on `images.google.com` / `google.com`. Shows the "paste to search" banner
-  when Flip Scout opened the tab, and dismisses itself on the page's next
-  paste event. Deliberately does **not** simulate paste/drop DOM events —
-  that was tried and doesn't reliably trigger Google's reverse-image search,
-  so a real user keystroke is required.
+  selection overlay, crops the screenshot via `<canvas>`, writes the crop to
+  the system clipboard with `navigator.clipboard.write()` + `ClipboardItem`,
+  and hands both a full-resolution and a downscaled copy of the crop back to
+  the background service worker.
 - `popup/` — toolbar popup: capture button + scrollable history (thumbnail,
   keyword, time-ago, tab links, delete, "skipped" notes).
 - `options/` — Settings page for the Anthropic API key.
 - `lib/` — small modules shared between the service worker and popup/options
   (`chrome.storage.local` history/settings CRUD, search URL builders,
-  time-ago formatting). Content scripts are plain (non-module) scripts and
-  can't `import` these, so their message-type string constants are
+  time-ago formatting). The content script is a plain (non-module) script
+  and can't `import` these, so its message-type string constants are
   hand-duplicated — see the comment at the top of `background/background.js`
   if you rename any of them.
+
+### Why no clipboard-paste step
+
+An earlier version of this extension copied the crop to the clipboard and
+relied on the user manually pasting it into Google's search box (simulating
+a paste DOM event doesn't reliably trigger Google's reverse-image search, so
+a real keystroke seemed necessary). In practice, that extra manual step was
+both slower than the goal of "as few clicks as possible" and turned out to
+be unreliable on its own.
+
+Instead, `background.js` POSTs the cropped image as `multipart/form-data`
+directly to `https://www.google.com/searchbyimage/upload` — the same
+endpoint Chrome's built-in "Search image with Google Lens" right-click menu
+item uses. Because the extension declares `host_permissions` for
+`google.com`, this `fetch()` bypasses the CORS restriction a normal webpage
+would hit, and the response's redirected URL is the finished results page,
+which gets opened directly in a new tab. No content script on Google's pages
+is needed anymore.
 
 ## Permissions rationale
 
 - `activeTab`, `scripting` — inject the capture overlay only into the tab
   the user actually triggered capture on.
-- `tabs` — open the Google Images/eBay/Shopping result tabs.
+- `tabs` — open the Google/eBay/Shopping result tabs.
 - `storage`, `unlimitedStorage` — history entries include thumbnail images,
   which can add up past the default quota.
 - `clipboardWrite` — write the cropped screenshot to the system clipboard.
-- Host permissions are limited to `images.google.com` and `google.com` —
-  the only sites Flip Scout injects a persistent content script into.
+- Host permissions are limited to `google.com` — needed for the
+  reverse-image-search upload `fetch()` to bypass CORS.
 
 ## Out of scope (by design)
 
@@ -111,6 +130,11 @@ Shopping tabs. This is entirely optional:
 
 ## Known fragility
 
-Google Images' front-end is not a stable API. If Google changes its page
-layout, `content/google-banner.js`'s positioning may need adjusting — this
-is an accepted tradeoff of not using a paid image-search API.
+`https://www.google.com/searchbyimage/upload` is an undocumented, internal
+Google endpoint (albeit the one Chrome's own UI uses) rather than a
+published API. If Google changes it, the upload `fetch()` in
+`openGoogleReverseImageSearch()` (`background/background.js`) will start
+failing — this fails loudly (caught, logged, surfaced as a "search failed"
+note in history) rather than silently, but the fix will require re-deriving
+the current upload endpoint/field names. This is an accepted tradeoff of not
+using a paid image-search API.

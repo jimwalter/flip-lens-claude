@@ -121,14 +121,15 @@
       const clipboardBlob = await new Promise((resolve) => cropCanvas.toBlob(resolve, 'image/png'));
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': clipboardBlob })]);
 
+      const fullDataUrl = cropCanvas.toDataURL('image/png');
       const previewDataUrl = downscaleToDataUrl(cropCanvas, PREVIEW_MAX_DIMENSION);
 
       await chrome.runtime.sendMessage({
         type: 'FLIPSCOUT_CAPTURE_DONE',
-        payload: { previewDataUrl },
+        payload: { fullDataUrl, previewDataUrl },
       });
 
-      showToast('Copied to clipboard! Opening Google Images…');
+      showToast('Copied! Searching Google, eBay, and Shopping…');
     } catch (err) {
       console.error('Flip Scout: capture failed', err);
       showToast('Flip Scout capture failed — see console for details.');

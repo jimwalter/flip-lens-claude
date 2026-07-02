@@ -1,5 +1,5 @@
 import { addHistoryEntry, getSettings } from '../lib/storage.js';
-import { buildGoogleImagesUrl, buildEbaySoldListingsUrl, buildGoogleShoppingUrl } from '../lib/url-builders.js';
+import { buildEbaySoldListingsUrl, buildGoogleShoppingUrl } from '../lib/url-builders.js';
 
 // Message type strings. Content scripts are plain (non-module) scripts and
 // hardcode these same literals — keep both sides in sync if you rename any.
@@ -13,6 +13,7 @@ const MSG = {
 
 const VISION_MODEL = 'claude-sonnet-5';
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
+const GOOGLE_UPLOAD_URL = 'https://www.google.com/searchbyimage/upload';
 
 const INJECTABLE_URL_PATTERN = /^https?:\/\//i;
 
@@ -93,12 +94,15 @@ async function flashBadgeError() {
 }
 
 async function handleCaptureComplete(payload) {
-  const { previewDataUrl } = payload;
+  const { fullDataUrl, previewDataUrl } = payload;
 
-  const googleImagesUrl = buildGoogleImagesUrl();
-  await chrome.tabs.create({ url: googleImagesUrl, active: true });
-
-  const { keyword, skippedReason } = await generateKeyword(previewDataUrl);
+  // Run the Google reverse-image upload and the AI keyword call in
+  // parallel — neither depends on the other, and eBay/Shopping gating
+  // should still work even if the Google upload fails.
+  const [googleImagesUrl, { keyword, skippedReason }] = await Promise.all([
+    openGoogleReverseImageSearch(fullDataUrl),
+    generateKeyword(previewDataUrl),
+  ]);
 
   const links = { googleImages: googleImagesUrl, ebay: null, googleShopping: null };
 
@@ -116,7 +120,41 @@ async function handleCaptureComplete(payload) {
     keyword,
     links,
     skippedReason: keyword ? null : skippedReason,
+    googleSearchFailed: !googleImagesUrl,
   });
+}
+
+async function openGoogleReverseImageSearch(fullDataUrl) {
+  try {
+    const imageBlob = await (await fetch(fullDataUrl)).blob();
+
+    const formData = new FormData();
+    formData.append('encoded_image', imageBlob, 'flipscout-capture.png');
+    formData.append('image_url', '');
+    formData.append('sbisrc', 'Google Chrome');
+
+    // Extension host_permissions for google.com let this fetch bypass the
+    // CORS restriction a normal webpage would hit, so we get a readable
+    // redirect response back with the finished results page URL — the
+    // same mechanism Chrome's own "Search image with Google Lens" context
+    // menu item uses under the hood.
+    const response = await fetch(GOOGLE_UPLOAD_URL, {
+      method: 'POST',
+      mode: 'cors',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      console.error('Flip Scout: Google reverse-image upload failed', response.status);
+      return null;
+    }
+
+    await chrome.tabs.create({ url: response.url, active: true });
+    return response.url;
+  } catch (err) {
+    console.error('Flip Scout: Google reverse-image upload errored', err);
+    return null;
+  }
 }
 
 async function generateKeyword(imageDataUrl) {

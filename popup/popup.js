@@ -69,6 +69,13 @@ function renderEntry(entry) {
     body.appendChild(renderSkipNote(entry.skippedReason));
   }
 
+  if (entry.googleSearchFailed) {
+    const note = document.createElement('div');
+    note.className = 'history-skip-note';
+    note.textContent = 'Google reverse-image search failed to open.';
+    body.appendChild(note);
+  }
+
   const links = document.createElement('div');
   links.className = 'history-links';
   addLink(links, entry.links.googleImages, 'Google Images');

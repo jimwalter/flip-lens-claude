@@ -11,18 +11,18 @@ Take a screenshot, then search it on Google — that's the whole extension.
      default.
 2. Trigger Flip Scout: click its toolbar icon, or press its keyboard
    shortcut (`Ctrl+Shift+Y` / `Cmd+Shift+Y` by default).
-3. Its popup opens, reads the image straight off your clipboard, uploads it
-   to Google's reverse-image search, and opens a new tab with the results —
-   then closes itself. No further clicks.
+3. A tab opens, reads the image straight off your clipboard, uploads it to
+   Google's reverse-image search, and navigates itself to the results. No
+   further clicks.
 
-That's the entire feature set. No AI keyword generation, no eBay or Google
-Shopping tabs, no capture history, no settings — just capture-to-clipboard
-(handled by the OS) in, search results tab out.
+If something goes wrong at any step (no image on the clipboard, the Google
+upload fails), that same tab shows a plain-language explanation and a Retry
+button — it does not fail silently or open a blank/broken tab.
 
 ## Status
 
 Statically validated (JSON parses, JS syntactically balanced) but **not yet
-run inside Chrome** — see "Load and test" below.
+run inside Chrome**. See "Load and test" below.
 
 ## Load and test (unpacked)
 
@@ -35,17 +35,19 @@ run inside Chrome** — see "Load and test" below.
 
 - `Cmd+Ctrl+Shift+4` on Mac (or `Win+Shift+S` on Windows) actually puts an
   image on the clipboard, not a file.
-- Click the toolbar icon → popup shows "Searching Google…" then a new tab
-  opens with real reverse-image-search results for what you captured, and
-  the popup closes itself.
-- Press the keyboard shortcut instead of clicking → identical behavior
-  (this exercises Chrome's `_execute_action` command, which is defined to
-  behave exactly like an icon click).
+- Click the toolbar icon → a new tab opens, shows "Reading clipboard…" then
+  "Searching Google…", then lands on real reverse-image-search results for
+  what you captured.
+- Press the keyboard shortcut instead of clicking → identical behavior.
 - Trigger Flip Scout with nothing (or non-image text) on the clipboard →
-  popup shows the "No image on your clipboard" message instead of failing
-  silently or opening a blank/broken tab.
-- If the Google upload fails (e.g. offline) → popup shows "Google search
-  failed" rather than hanging or opening a broken tab.
+  the tab shows the "No image on your clipboard" message with a Retry
+  button, instead of failing silently.
+- If the Google upload fails (e.g. offline) → the tab shows "Google search
+  failed" with a Retry button.
+- If anything misbehaves, right-click the Flip Scout tab → **Inspect** and
+  check the Console — every failure path `console.error`s the actual error
+  before showing the friendly message, so there's always something concrete
+  to go on rather than "it doesn't work."
 
 ## Keyboard shortcut
 
@@ -56,26 +58,27 @@ your system — if it doesn't do anything, open
 
 ## Architecture
 
-- `manifest.json` — no background service worker, no content scripts.
-  `commands._execute_action` binds the keyboard shortcut to the exact same
-  behavior as clicking the toolbar icon (Chrome's reserved command name for
-  this — no custom handling needed).
-- `popup/popup.html` + `popup/popup.js` — the entire extension. On open, it
-  reads the clipboard, uploads to Google, opens the results tab, closes
-  itself.
+- `manifest.json` — no `default_popup` is configured, so both a toolbar
+  click and the reserved `_execute_action` keyboard-shortcut command fire
+  `chrome.action.onClicked` (confirmed against Chrome's own `action` API
+  docs) — one code path handles both triggers.
+- `background/background.js` — the entire service worker is one listener:
+  on click, open `capture/capture.html` as a normal tab.
+- `capture/capture.html` + `capture/capture.js` — reads the clipboard,
+  uploads to Google, and navigates itself to the results (or shows an error
+  with Retry/Close).
 
-### Why the popup, and not a background script or content script
+### Why a real tab, not a popup
 
-Clipboard reads (`navigator.clipboard.read()`) need a genuinely **focused
-document** with a real user gesture behind it, or Chrome throws
-`Document is not focused`. Service workers have no document at all, and
-offscreen documents (the usual MV3 workaround for background clipboard
-access) are never focusable, so `read()` fails there too — this was checked
-against Chrome's own extension APIs before writing any code, not assumed.
-The popup is the one context that's unambiguously focused and
-user-gesture-backed at the moment it opens, whether that open was triggered
-by a click or by the keyboard shortcut, so it's the only reliable place to
-do this.
+An earlier version of this extension did the clipboard-read-and-upload work
+inside the extension's popup. Chrome popups close the instant they lose
+focus — which makes them a bad host for a clipboard permission prompt (if
+one appears, the popup can vanish along with it) and means there's no way
+to inspect a console error before the popup disappears. That version was
+reported "doesn't work at all" with no further detail obtainable, which is
+consistent with this exact failure mode. A normal tab has none of these
+problems: it has stable focus, and you can right-click → Inspect it like
+any other page if it breaks.
 
 ### Why POST to `google.com/searchbyimage/upload`
 
@@ -83,7 +86,7 @@ This is the same endpoint Chrome's own "Search image with Google Lens"
 right-click menu item uses internally — confirmed by reading the source of
 [dessant/search-by-image](https://github.com/dessant/search-by-image), an
 actively maintained open-source reverse-image-search extension, rather than
-guessed. Because `google.com` is declared in `host_permissions`, the popup's
+guessed. Because `google.com` is declared in `host_permissions`, the
 `fetch()` to that endpoint bypasses the CORS restriction a normal webpage
 would hit, and the response's redirected URL is the finished results page.
 
@@ -99,18 +102,16 @@ happens at all), no `storage` (nothing is saved), no `tabs` permission
 
 ## Explicitly out of scope
 
-- AI-generated search keywords, eBay sold listings, Google Shopping tabs,
-  capture history, and any settings/options page. These existed in an
-  earlier, more complex version of this extension and were cut to keep the
-  capture-to-search path as short and reliable as possible. If wanted back
-  later, they'd be additive on top of this simpler base rather than a
-  rewrite.
+AI-generated search keywords, eBay sold listings, Google Shopping tabs,
+capture history, and any settings/options page. These existed in an
+earlier, more complex version of this extension and were cut to keep the
+capture-to-search path as short and reliable as possible.
 
 ## Known fragility
 
 `https://www.google.com/searchbyimage/upload` is an undocumented, internal
 Google endpoint (albeit the one Chrome's own UI uses) rather than a
-published API. If Google changes it, the upload in `popup/popup.js` will
-start failing — this fails loudly (the popup shows "Google search failed")
-rather than silently, but the fix will require re-deriving the current
-upload endpoint/field names.
+published API. If Google changes it, the upload in `capture/capture.js`
+will start failing — this fails loudly (the tab shows "Google search
+failed" and the real error is in the console) rather than silently, but the
+fix will require re-deriving the current upload endpoint/field names.
